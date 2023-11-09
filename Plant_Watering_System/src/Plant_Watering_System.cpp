@@ -13,6 +13,10 @@
 #include "Air_Quality_Sensor.h"
 #include <math.h>
 #include "Adafruit_BME280.h"
+#include <Adafruit_MQTT.h>
+#include "Adafruit_MQTT/Adafruit_MQTT_SPARK.h"
+#include "Adafruit_MQTT/Adafruit_MQTT.h"
+#include "credentials.h"
 
 
 // Let Device OS manage the connection to the Particle Cloud
@@ -20,6 +24,16 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 #define OLED_RESET D4
 Adafruit_SSD1306 display (OLED_RESET);
 Adafruit_BME280 bme;
+TCPClient TheClient; 
+Adafruit_MQTT_SPARK mqtt(&TheClient,AIO_SERVER,AIO_SERVERPORT,AIO_USERNAME,AIO_KEY); 
+
+//feeds
+Adafruit_MQTT_Publish soilMoistureFeed = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/soilmoisturefeed");
+Adafruit_MQTT_Publish temperatureFeed = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/temperaturefeed");
+Adafruit_MQTT_Publish pressureFeed = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/pressurerefeed");
+Adafruit_MQTT_Publish humidityFeed = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/humidityfeed");
+Adafruit_MQTT_Subscribe waterFeed = Adafruit_MQTT_Subscribe(&mqtt, AIO_USERNAME "/feeds/waterbutton"); 
+
 
 // Run the application and system concurrently in separate threads
 //SYSTEM_THREAD(ENABLED);
@@ -40,13 +54,17 @@ int sampletime_ms = 30000;
 float ratio;
 float concentration;
 bool status;
+float subValue;
 
 
 AirQualitySensor airSensor (A5);
 
+//Declare functions:
 int airSensing ();
 void dataBME ();
 int soilMoisture ();
+void MQTT_connect();
+bool MQTT_ping();
 
 // setup() runs once, when the device is first turned on
 void setup() {
@@ -78,12 +96,30 @@ void setup() {
     Serial.printf ("All good\n" );  
     }
     delay (5000);
+
+  WiFi.on();
+  WiFi.connect();
+  while(WiFi.connecting()) {
+    Serial.printf(".");
+  }
 }
 
 void loop() {
+  MQTT_connect();
+  MQTT_ping();
 
-// ensors reads BME, AQ, DUST
-
+// Adafruit_MQTT_Subscribe *subscription;
+//   while ((subscription = mqtt.readSubscription(2000))) {
+//     if (subscription == &waterFeed) {
+//       subValue = atof((char *)waterFeed.lastread);
+//       if (subValue == 1){
+//         while ((millis()-lastTime > 500)){
+//       digitalWrite (PUMPPIN, HIGH);
+//       Serial.printf ("Watering the plant\n");
+//       }
+//         }
+//     }
+//   }
 duration = pulseIn(DUSTPIN, LOW);
     lowpulseoccupancy = lowpulseoccupancy+duration;
 
@@ -91,19 +127,25 @@ while ((millis()-lastRead) > 30000) //if the sampel time == 30s
 {    
    ratio = lowpulseoccupancy/(sampletime_ms*10.0);  // Integer percentage 0=>100
         concentration = 1.1*pow(ratio,3)-3.8*pow(ratio,2)+520*ratio+0.62; // using spec sheet curve
-    if ((millis()-lastTime > 60000)) {   
+    if ((millis()-lastTime > 300000)) {   
       Serial.printf ("lowpulseoccupancy=%i\n", lowpulseoccupancy);
         Serial.printf ("ratio=%f \n", ratio);
         Serial.printf ("concentration= %f\n", concentration);
         lowpulseoccupancy = 0;
         lastRead = millis();
-
+    
 
  airSensing ();
 Serial.printf ("Air Quality %i\n", airSensing ());
 dataBME ();
 soilMoisture ();
 Serial.printf ("Soil moisture is %i\n", soilMoisture ());
+   if(mqtt.Update()) {
+    soilMoistureFeed.publish(soilMoisture ());
+
+      } 
+
+
 
 lastTime = millis ();
     }
@@ -123,6 +165,10 @@ void dataBME () {
   humidRH=bme.readHumidity ();
 
   Serial.printf ("Temperature= %f\n Pressure=%i\n Humidity=%i\n", tempC, hgmm, humidRH);
+     if(mqtt.Update()) {
+    temperatureFeed.publish(tempC);}
+    pressureFeed.publish(hgmm);
+    humidityFeed.publish (humidRH);
 }
 
 int airSensing () {
@@ -152,12 +198,47 @@ int soilMoisture (){
       digitalWrite (PUMPPIN, HIGH); }
       lastTime = millis ();
       digitalWrite (PUMPPIN, LOW);
+  //OLED talks
  }
 
  return moisture;
 
 }
 
+void MQTT_connect() {
+  int8_t ret;
+ 
+  // Return if already connected.
+  if (mqtt.connected()) {
+    return;
+  }
+ 
+  Serial.print("Connecting to MQTT... ");
+ 
+  while ((ret = mqtt.connect()) != 0) { // connect will return 0 for connected
+       Serial.printf("Error Code %s\n",mqtt.connectErrorString(ret));
+       Serial.printf("Retrying MQTT connection in 5 seconds...\n");
+       mqtt.disconnect();
+       delay(5000);  // wait 5 seconds and try again
+  }
+  Serial.printf("MQTT Connected!\n");
+}
+
+bool MQTT_ping() {
+  static unsigned int last;
+  bool pingStatus;
+
+  if ((millis()-last)>120000) {
+      Serial.printf("Pinging MQTT \n");
+      pingStatus = mqtt.ping();
+      if(!pingStatus) {
+        Serial.printf("Disconnecting \n");
+        mqtt.disconnect();
+      }
+      last = millis();
+  }
+  return pingStatus;
+}
 
 //publish soil levels
 //   DateTime= Time.timeStr (); // Current Date and Time from Particle Time class
